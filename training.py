@@ -48,10 +48,23 @@ def train_dataset(_epoch, dataloader, model, loss_function, optimizer):
         optimizer.zero_grad() # EX9
 
         # Step 2 - forward pass: y' = model(x)
-        outputs = model(inputs, lengths) # EX9
-        
+        if model.__class__.__name__ in ['BaselineDNN', 'LSTM']:
+            outputs = model(inputs, lengths)
+        else:
+            outputs = model(inputs)
+
+        # fix label type for different loss func
+        # print(loss_function.__dict__)
+        # if loss_function.__func__.__name__ == 'BCEWithLogitsLoss':
+        #     labels = torch.nn.functional.one_hot(labels, num_classes=2)
+
         # Step 3 - compute loss: L = loss_function(y, y')
-        loss = loss_function(outputs,labels)  # EX9
+        try:
+            loss = loss_function(outputs, labels)
+        except ValueError:
+            # fix labels for 'BCEWithLogitsLoss' loss function
+            bin_labels = torch.nn.functional.one_hot(labels.long(), num_classes=2)
+            loss = loss_function(outputs, bin_labels.float())
 
         # Step 4 - backward pass: compute gradient wrt model parameters
         loss.backward()  # EX9
@@ -94,12 +107,23 @@ def eval_dataset(dataloader, model, loss_function):
             inputs, labels, lengths = inputs.to(device), labels.to(device), lengths.to(device) # EX9
 
             # Step 2 - forward pass: y' = model(x)
-            outputs = model(inputs, lengths) # EX9
+            if model.__class__.__name__ in ['BaselineDNN', 'LSTM']:
+                outputs = model(inputs, lengths)
+            else:
+                outputs = model(inputs)
 
-            # Step 3 - compute loss.
-            # We compute the loss only for inspection (compare train/test loss)
-            # because we do not actually backpropagate in test time
-            loss = loss_function(outputs, labels)  # EX9
+            # fix label type for different loss func
+            # print(loss_function.__dict__)
+            # if loss_function.__func__.__name__ == 'BCEWithLogitsLoss':
+            #     labels = torch.nn.functional.one_hot(labels, num_classes=2)
+
+            # Step 3 - compute loss: L = loss_function(y, y')
+            try:
+                loss = loss_function(outputs, labels)
+            except ValueError:
+                # fix labels for 'BCEWithLogitsLoss' loss function
+                bin_labels = torch.nn.functional.one_hot(labels.long(), num_classes=2)
+                loss = loss_function(outputs, bin_labels.float())
 
             # Step 4 - make predictions (class = argmax of posteriors)
             if outputs.shape[1] == 1:  # Binary classification (equivalent to 0.5 threshold)
@@ -134,16 +158,16 @@ def torch_train_val_split(
     val_sampler = SubsetRandomSampler(val_indices)
 
     train_loader = DataLoader(
-        dataset, batch_size=batch_train, sampler=train_sampler)
+        dataset, batch_size=batch_train, sampler=train_sampler, pin_memory=torch.cuda.is_available())
     val_loader = DataLoader(
-        dataset, batch_size=batch_eval, sampler=val_sampler)
+        dataset, batch_size=batch_eval, sampler=val_sampler, pin_memory=torch.cuda.is_available())
     return train_loader, val_loader
 
 
 def get_metrics_report(y, y_hat):
     # Convert values to lists
-    y = np.concatenate(y, axis=0)
-    y_hat = np.concatenate(y_hat, axis=0)
+    #y = np.concatenate(y, axis=0)
+    #y_hat = np.concatenate(y_hat, axis=0)
     # report metrics
     report = f'  accuracy: {accuracy_score(y, y_hat)}\n  recall: ' + \
         f'{recall_score(y, y_hat, average="macro")}\n  f1-score: {f1_score(y, y_hat,average="macro")}'

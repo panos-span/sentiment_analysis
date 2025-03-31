@@ -4,11 +4,12 @@ import warnings
 from sklearn.exceptions import UndefinedMetricWarning
 from sklearn.preprocessing import LabelEncoder
 import torch
+import time
 from torch import nn
 from torch.utils.data import DataLoader
-import wandb
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 
-from sklearn.metrics import confusion_matrix
 from sklearn.metrics import accuracy_score, f1_score, recall_score
 from early_stopper import EarlyStopper
 
@@ -18,7 +19,8 @@ from models import BaselineDNN
 from training import train_dataset, eval_dataset
 from utils.load_datasets import load_MR, load_Semeval2017A
 from utils.load_embeddings import load_word_vectors
-from training import get_metrics_report
+from torch.utils.tensorboard import SummaryWriter
+from training import get_metrics_report, torch_train_val_split
 
 warnings.filterwarnings("ignore", category=UndefinedMetricWarning)
 
@@ -26,20 +28,20 @@ warnings.filterwarnings("ignore", category=UndefinedMetricWarning)
 # Configuration
 ########################################################
 
-
 # Download the embeddings of your choice
 # for example http://nlp.stanford.edu/data/glove.6B.zip
 
 # 1 - point to the pretrained embeddings file (must be in /embeddings folder)
-EMBEDDINGS = os.path.join(EMB_PATH, "glove.6B.50d.txt")
+#EMBEDDINGS = os.path.join(EMB_PATH, "crawl-300d-2M-subword.vec")
+EMBEDDINGS = os.path.join(EMB_PATH, "glove.twitter.27B.200d.txt")
 
 # 2 - set the correct dimensionality of the embeddings
-EMB_DIM = 50
+EMB_DIM = 200
 
 EMB_TRAINABLE = False
 BATCH_SIZE = 128
 EPOCHS = 50
-DATASET = "MR"  # options: "MR", "Semeval2017A"
+DATASET = "Semeval2017A"  # options: "MR", "Semeval2017A"
 
 # if your computer has a CUDA compatible gpu use it, otherwise use the cpu
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -74,21 +76,23 @@ train_set = SentenceDataset(X_train, y_train, word2idx)
 test_set = SentenceDataset(X_test, y_test, word2idx)
 
 # EX7 - Define our PyTorch-based DataLoader
-train_loader = DataLoader(
-    dataset=train_set,
-    batch_size=BATCH_SIZE,
-    shuffle=True,
-    num_workers=4,
-    pin_memory=torch.cuda.is_available()
-) # EX7
+train_loader, val_loader = torch_train_val_split(train_set, BATCH_SIZE, BATCH_SIZE)
 
-test_loader = DataLoader(
-    dataset=test_set,
-    batch_size=BATCH_SIZE,
-    shuffle=False,
-    num_workers=4,
-    pin_memory=torch.cuda.is_available()
-) # EX7
+#train_loader = DataLoader(
+#    dataset=train_set,
+#    batch_size=BATCH_SIZE,
+#    shuffle=True,
+#    num_workers=0,
+#    pin_memory=torch.cuda.is_available()
+#) # EX7
+
+#test_loader = DataLoader(
+#    dataset=test_set,
+#    batch_size=BATCH_SIZE,
+#    shuffle=False,
+#    num_workers=0,
+#    pin_memory=torch.cuda.is_available()
+#) # EX7
 
 
 #############################################################################
@@ -110,12 +114,15 @@ parameters = [p for p in model.parameters() if p.requires_grad] # EX8
 # Use Adam optimizer which adapts learning rates automatically
 optimizer = torch.optim.Adam(parameters, lr=0.001, weight_decay=1e-5) # EX8
 
-# Add these before the training loop
-train_losses = []
-test_losses = []
-train_metrics = []
-test_metrics = []
-
+# Add a scheduler to adjust the learning rate
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    optimizer,
+    mode='min',          # Reduce LR when monitored value stops decreasing
+    factor=0.1,          # Multiply LR by this factor
+    patience=3,         # Number of epochs with no improvement after which LR will be reduced
+    verbose=True,        # Print message when LR is reduced
+    min_lr=1e-6          # Lower bound on the learning rate
+)
 
 # move the mode weight to cpu or gpu
 model.to(DEVICE)
@@ -124,100 +131,124 @@ print(f"Model moved to {DEVICE}")
 #############################################################################
 # Training Pipeline
 #############################################################################
-wandb.init(
-    project="sentiment-analysis",
-    name=f"{DATASET}-baseline-dnn",
-    config={
-        "architecture": "BaselineDNN",
-        "dataset": DATASET,
-        "epochs": EPOCHS,
-        "batch_size": BATCH_SIZE,
-        "embedding_dim": EMB_DIM,
-        "trainable_emb": EMB_TRAINABLE,
-        "learning_rate": optimizer.param_groups[0]['lr'],
-        "classes": list(le.classes_)
-    }
-)
-
-# Log model architecture
-wandb.watch(model, log="all")
 
 # Setup early stopping
-early_stopper = EarlyStopper(model, f'{DATASET}_best_model.pt', patience=5)
+output_dir = f"outputs/{DATASET}"
+os.makedirs(output_dir, exist_ok=True)
+# Initialize TensorBoard writer
+log_dir = os.path.join("runs", f"{DATASET}_{time.strftime('%Y%m%d-%H%M%S')}")
+writer = SummaryWriter(log_dir)
+print(f"TensorBoard logs will be saved to {log_dir}")
+
+early_stopper = EarlyStopper(model, f'{output_dir}/{DATASET}_best_{model.__class__.__name__}.pt', patience=5)
+
+# Log model hyperparameters
+writer.add_text("hyperparameters/model_type", "BaselineDNN")
+writer.add_text("hyperparameters/dataset", DATASET)
+writer.add_text("hyperparameters/batch_size", str(BATCH_SIZE))
+writer.add_text("hyperparameters/embedding_dim", str(EMB_DIM))
+writer.add_text("hyperparameters/epochs", str(EPOCHS))
+writer.add_text("hyperparameters/learning_rate", str(optimizer.param_groups[0]['lr']))
+
+# Setup early stopping
+
+# Initialize tracking variables
+best_test_loss = float('inf')
+train_losses = []
+val_losses = []
 
 print(f"Starting training for {DATASET} dataset with {n_classes} classes")
 
 for epoch in range(1, EPOCHS + 1):
     # Train the model for one epoch
-    train_loss = train_dataset(epoch, train_loader, model, criterion, optimizer)
+    train_dataset(epoch, train_loader, model, criterion, optimizer, scheduler)
     
     # Evaluate on train and test sets
     train_loss, (y_train_pred, y_train_gold) = eval_dataset(train_loader, model, criterion)
-    test_loss, (y_test_pred, y_test_gold) = eval_dataset(test_loader, model, criterion)
+    train_losses.append(train_loss)
+    val_loss, (y_test_pred, y_test_gold) = eval_dataset(val_loader, model, criterion)
+    val_losses.append(val_loss)
+    
+    # Update the learning rate scheduler
+    scheduler.step(val_loss)
     
     # Calculate metrics
-    train_metrics = {
-        "train/loss": train_loss,
-        "train/accuracy": accuracy_score(y_train_gold, y_train_pred),
-        "train/f1_macro": f1_score(y_train_gold, y_train_pred, average='macro'),
-        "train/recall_macro": recall_score(y_train_gold, y_train_pred, average='macro')
-    }
+    train_acc = accuracy_score(y_train_gold, y_train_pred)
+    train_f1 = f1_score(y_train_gold, y_train_pred, average='macro')
+    train_recall = recall_score(y_train_gold, y_train_pred, average='macro')
     
-    test_metrics = {
-        "test/loss": test_loss,
-        "test/accuracy": accuracy_score(y_test_gold, y_test_pred),
-        "test/f1_macro": f1_score(y_test_gold, y_test_pred, average='macro'),
-        "test/recall_macro": recall_score(y_test_gold, y_test_pred, average='macro')
-    }
+    test_acc = accuracy_score(y_test_gold, y_test_pred)
+    test_f1 = f1_score(y_test_gold, y_test_pred, average='macro')
+    test_recall = recall_score(y_test_gold, y_test_pred, average='macro')
     
-    # Log metrics to wandb
-    wandb.log({**train_metrics, **test_metrics, "epoch": epoch})
+    # Log metrics to TensorBoard
+    writer.add_scalar('Loss/train', train_loss, epoch)
+    writer.add_scalar('Loss/val', val_loss, epoch)
+    writer.add_scalar('Accuracy/train', train_acc, epoch)
+    writer.add_scalar('Accuracy/val', test_acc, epoch)
+    writer.add_scalar('F1_Score/train', train_f1, epoch)
+    writer.add_scalar('F1_Score/val', test_f1, epoch)
+    writer.add_scalar('Recall/train', train_recall, epoch)
+    writer.add_scalar('Recall/val', test_recall, epoch)
     
-    # Print metrics
-    print(f"\nEpoch {epoch}/{EPOCHS}")
-    print(f"Train - Loss: {train_loss:.4f}, Acc: {train_metrics['train/accuracy']:.4f}, F1: {train_metrics['train/f1_macro']:.4f}")
-    print(f"Test  - Loss: {test_loss:.4f}, Acc: {test_metrics['test/accuracy']:.4f}, F1: {test_metrics['test/f1_macro']:.4f}")
+    # Print metrics for current epoch
+    print()
+    print(get_metrics_report(y_train_gold, y_train_pred))
+    print()
+    
+    # Print metrics for current epoch
+    #print(f"\nEpoch {epoch}/{EPOCHS}")
+    #print(f"Train - Loss: {train_loss:.4f}, Acc: {train_acc:.4f}, F1: {train_f1:.4f}")
+    #print(f"Test  - Loss: {test_loss:.4f}, Acc: {test_acc:.4f}, F1: {test_f1:.4f}")
     
     # Check for early stopping
-    if early_stopper.early_stop(test_loss):
+    if early_stopper.early_stop(val_loss):
         print(f"Early stopping triggered at epoch {epoch}")
+        print(f'Epoch {epoch}/{EPOCHS}, Loss at training set: {train_loss}\n\tLoss at validation set: {val_loss}')
+        print('Training has been completed.\n')
         break
 
 # Load the best model for final evaluation
-model.load_state_dict(torch.load(f'{DATASET}_best_model.pt'))
+model.load_state_dict(torch.load(f'{output_dir}/{DATASET}_best_model.pt'))
 print("\nLoaded best model for final evaluation")
 
 # Final evaluation on test set
-_, (y_test_pred, y_test_gold) = eval_dataset(test_loader, model, criterion)
+_, (y_test_pred, y_test_gold) = eval_dataset(val_loader, model, criterion)
 
-# Log final confusion matrix to wandb
-cm = confusion_matrix(y_test_gold, y_test_pred)
-wandb.log({
-    "confusion_matrix": wandb.plot.confusion_matrix(
-        probs=None,
-        y_true=y_test_gold,
-        preds=y_test_pred,
-        class_names=le.classes_
-    )
-})
+# Calculate final metrics
+final_acc = accuracy_score(y_test_gold, y_test_pred)
+final_f1 = f1_score(y_test_gold, y_test_pred, average='macro')
+final_recall = recall_score(y_test_gold, y_test_pred, average='macro')
 
-# Log final metrics
-final_metrics = {
-    "final/accuracy": accuracy_score(y_test_gold, y_test_pred),
-    "final/f1_macro": f1_score(y_test_gold, y_test_pred, average='macro'),
-    "final/recall_macro": recall_score(y_test_gold, y_test_pred, average='macro')
-}
-wandb.log(final_metrics)
-
-# Print final report
 print(f"\nFinal evaluation on {DATASET} dataset:")
-print(get_metrics_report([y_test_gold], [y_test_pred]))
+print(f"  Accuracy: {final_acc:.4f}")
+print(f"  F1 Score (macro): {final_f1:.4f}")
+print(f"  Recall (macro): {final_recall:.4f}")
 
-# Save model to wandb
-torch.save(model.state_dict(), f"{DATASET}_final_model.pt")
-wandb.save(f"{DATASET}_final_model.pt")
+# Create and save confusion matrix
+plt.figure(figsize=(10, 8))
+cm = confusion_matrix(y_test_gold, y_test_pred)
+disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=le.classes_)
+disp.plot(cmap=plt.cm.Blues)
+plt.title(f'Confusion Matrix - {DATASET}')
+plt.tight_layout()
+plt.savefig(f'{output_dir}/confusion_matrix.png')
+print(f"Confusion matrix saved to {output_dir}/confusion_matrix.png")
 
-# Close wandb run
-wandb.finish()
+# Plot loss curves
+plt.figure(figsize=(10, 6))
+plt.plot(train_losses, label='Training Loss')
+plt.plot(val_losses, label='Validation Loss')
+plt.xlabel('Epoch')
+plt.ylabel('Loss')
+plt.title(f'Learning Curves - {DATASET}')
+plt.legend()
+plt.grid(True)
+plt.savefig(f'{output_dir}/learning_curves.png')
+print(f"Learning curves saved to {output_dir}/learning_curves.png")
 
-print("Training completed. Results logged to Weights & Biases project 'sentiment-analysis'")
+# Close TensorBoard writer
+writer.close()
+
+print(f"\nTraining completed. Results saved to {output_dir}")
+print("To view TensorBoard logs, run: tensorboard --logdir=runs")

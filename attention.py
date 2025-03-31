@@ -48,7 +48,7 @@ class FeedFoward(nn.Module):
 
 class SimpleSelfAttentionModel(nn.Module):
 
-    def __init__(self, output_size, embeddings, max_length=60):
+    def __init__(self, output_size, embeddings, max_length=60, dropout=0.2):
         super().__init__()
 
         self.n_head = 1
@@ -69,20 +69,30 @@ class SimpleSelfAttentionModel(nn.Module):
         self.ln2 = nn.LayerNorm(dim)
 
         # TODO: Main-lab-Q3 - define output classification layer
-        self.output = ...
+        self.output = nn.Sequential(
+            nn.Dropout(dropout), 
+            nn.Linear(dim, output_size)
+        )
 
     def forward(self, x):
         B, T = x.shape
+        # Infer lengths by counting non-padding tokens (assuming padding token ID is 0)
+        lengths = (x != 0).sum(dim=1)
+        
         tok_emb = self.token_embedding_table(x)  # (B,T,C)
-        pos_emb = self.position_embedding_table(torch.arange(T))  # (T,C)
+        pos_emb = self.position_embedding_table(torch.arange(T, device=x.device))  # (T,C)
         x = tok_emb + pos_emb  # (B,T,C)
         x = x + self.sa(self.ln1(x))
         x = x + self.ffwd(self.ln2(x))
 
-        # TODO: Main-lab-Q3 - avg pooling to get a sentence embedding
-        x = ...  # (B,C)
+        # Create mask for valid (non-padding) tokens using inferred lengths
+        mask = torch.arange(T, device=x.device)[None, :] < lengths[:, None]
+        mask = mask.unsqueeze(2).to(x.dtype)  # (B,T,1)
+        
+        # Apply mask and compute average
+        x = (x * mask).sum(dim=1) / lengths.unsqueeze(1).clamp(min=1)  # (B,C)
 
-        logits = self.output(x)  # (C,output)
+        logits = self.output(x)  # (B,output_size)
         return logits
 
 
@@ -104,18 +114,69 @@ class MultiHeadAttention(nn.Module):
 
 class MultiHeadAttentionModel(nn.Module):
 
-    def __init__(self, output_size, embeddings, max_length=60, n_head=3):
+    def __init__(self, output_size, embeddings, max_length=60, n_head=3 , dropout=0.2):
         super().__init__()
+        
+        self.max_length = max_length
+        self.n_head = n_head
+        
+        # Process the embeddings
+        embeddings = np.array(embeddings)
+        num_embeddings, dim = embeddings.shape
+        
+        # Token embeddings
+        self.token_embedding_table = nn.Embedding(num_embeddings, dim)
+        self.token_embedding_table = self.token_embedding_table.from_pretrained(
+            torch.Tensor(embeddings), freeze=True)
+        
+        # Position embeddings
+        self.position_embedding_table = nn.Embedding(self.max_length, dim)
 
-        # TODO: Main-Lab-Q4 - define the model
-        # Hint: it will be similar to `SimpleSelfAttentionModel` but
-        # `MultiHeadAttention` will be utilized for the self-attention module here
-        ...
+        # MultiHead attention
+        head_size = dim // self.n_head
+        self.mba = MultiHeadAttention(n_head, head_size, dim)
+        
+                # Feed-forward network
+        self.ffwd = FeedFoward(dim)
+        
+        # Layer normalization
+        self.ln1 = nn.LayerNorm(dim)
+        self.ln2 = nn.LayerNorm(dim)
+        
+        # Output classification layer
+        self.dropout = nn.Dropout(dropout)
+        self.output = nn.Linear(dim, output_size)
 
     def forward(self, x):
-        ...
-
-        logits = ...
+        B, T = x.shape
+        
+        # Infer lengths by counting non-padding tokens
+        lengths = (x != 0).sum(dim=1)
+        
+        # Embed tokens and positions
+        tok_emb = self.token_embedding_table(x)  # (B,T,C)
+        pos_emb = self.position_embedding_table(torch.arange(T, device=x.device))  # (T,C)
+        x = tok_emb + pos_emb  # (B,T,C)
+        
+        # Apply multi-head attention with residual connection
+        x = x + self.mha(self.ln1(x))
+        
+        # Apply feed-forward network with residual connection
+        x = x + self.ffwd(self.ln2(x))
+        
+        # Create mask for valid (non-padding) tokens
+        mask = torch.arange(T, device=x.device)[None, :] < lengths[:, None]
+        mask = mask.unsqueeze(2).to(x.dtype)  # (B,T,1)
+        
+        # Apply mask and compute average
+        x = (x * mask).sum(dim=1) / lengths.unsqueeze(1).clamp(min=1)  # (B,C)
+        
+        # Apply dropout before classification
+        x = self.dropout(x)
+        
+        # Project to output classes
+        logits = self.output(x)
+        
         return logits
 
 
@@ -138,25 +199,61 @@ class Block(nn.Module):
 
 
 class TransformerEncoderModel(nn.Module):
-    def __init__(self, output_size, embeddings, max_length=60, n_head=3, n_layer=3):
+    def __init__(self, output_size, embeddings, max_length=60, n_head=3, n_layer=3, dropout=0.2):
         super().__init__()
-
-        # TODO: Main-Lab-Q5 - define the model
-        # Hint: it will be similar to `MultiHeadAttentionModel` but now
-        # there are blocks of MultiHeadAttention modules as defined below
-        ...
-
-        num_embeddings, dim = ...
-
+        
+        self.max_length = max_length
+        self.n_head = n_head
+        self.n_layer = n_layer
+        
+        # Process the embeddings
+        embeddings = np.array(embeddings)
+        num_embeddings, dim = embeddings.shape
+        
+        # Token embeddings
+        self.token_embedding_table = nn.Embedding(num_embeddings, dim)
+        self.token_embedding_table = self.token_embedding_table.from_pretrained(
+            torch.Tensor(embeddings), freeze=True)
+        
+        # Position embeddings
+        self.position_embedding_table = nn.Embedding(self.max_length, dim)
+        
         head_size = dim // self.n_head
         self.blocks = nn.Sequential(
             *[Block(n_head, head_size, dim) for _ in range(n_layer)])
         self.ln_f = nn.LayerNorm(dim)  # final layer norm
 
-        self.output = ...
+        self.dropout = nn.Dropout(dropout)
+        self.output = nn.Linear(dim, output_size)
 
     def forward(self, x):
-        ...
-
-        logits = ...
+        B, T = x.shape
+        
+        # Infer lengths by counting non-padding tokens
+        lengths = (x != 0).sum(dim=1)
+        
+        # Embed tokens and positions
+        tok_emb = self.token_embedding_table(x)  # (B,T,C)
+        pos_emb = self.position_embedding_table(torch.arange(T, device=x.device))  # (T,C)
+        x = tok_emb + pos_emb  # (B,T,C)
+        
+        # Apply transformer blocks
+        x = self.blocks(x)
+        
+        # Apply final layer normalization
+        x = self.ln_f(x)
+        
+        # Create mask for valid (non-padding) tokens
+        mask = torch.arange(T, device=x.device)[None, :] < lengths[:, None]
+        mask = mask.unsqueeze(2).to(x.dtype)  # (B,T,1)
+        
+        # Apply mask and compute average
+        x = (x * mask).sum(dim=1) / lengths.unsqueeze(1).clamp(min=1)  # (B,C)
+        
+        # Apply dropout before classification
+        x = self.dropout(x)
+        
+        # Project to output classes
+        logits = self.output(x)
+        
         return logits

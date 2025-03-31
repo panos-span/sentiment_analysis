@@ -73,8 +73,8 @@ def load_Semeval2017A():
 
 
 def load_MR():
-    pos = open(os.path.join(DATA_PATH, "MR/rt-polarity.pos")).readlines()
-    neg = open(os.path.join(DATA_PATH, "MR/rt-polarity.neg")).readlines()
+    pos = open(os.path.join(DATA_PATH, "MR/rt-polarity.pos"), encoding="utf-8").readlines()
+    neg = open(os.path.join(DATA_PATH, "MR/rt-polarity.neg"), encoding="utf-8").readlines()
 
     pos = [x.strip() for x in pos]
     neg = [x.strip() for x in neg]

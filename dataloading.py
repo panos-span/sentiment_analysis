@@ -1,6 +1,5 @@
 from torch.utils.data import Dataset
 from tqdm import tqdm
-import torch
 import numpy as np
 import nltk
 from nltk.tokenize import word_tokenize
@@ -98,21 +97,21 @@ class SentenceDataset(Dataset):
         self.max_length = max(lengths)
         
         # Print length distribution for better decision-making
-        percentiles = np.percentile(lengths, [50, 75, 90, 95, 99])
-        print(f"Sentence length stats: mean={np.mean(lengths):.1f}, median={percentiles[0]:.1f}")
-        print(f"75th={percentiles[1]:.1f}, 90th={percentiles[2]:.1f}, 95th={percentiles[3]:.1f}, 99th={percentiles[4]:.1f}, max={self.max_length}")
+        #percentiles = np.percentile(lengths, [50, 75, 90, 95, 99])
+        #print(f"Sentence length stats: mean={np.mean(lengths):.1f}, median={percentiles[0]:.1f}")
+        #print(f"75th={percentiles[1]:.1f}, 90th={percentiles[2]:.1f}, 95th={percentiles[3]:.1f}, 99th={percentiles[4]:.1f}, max={self.max_length}")
         
         # Suggest a reasonable max_length that covers most cases
-        suggested_max = int(percentiles[2])  # 90th percentile is often a good choice
-        print(f"Suggested max_length: {suggested_max} (covers 90% of samples)")
+        #suggested_max = int(percentiles[2])  # 90th percentile is often a good choice
+        #print(f"Suggested max_length: {suggested_max} (covers 90% of samples)")
         
         # Optional: Allow setting a custom max_length to avoid outliers
         # self.max_length = suggested_max  # Uncomment to use suggested length
         
         # Print the first 10 tokenized examples efficiently
-        print("\nFirst 10 tokenized examples:")
-        for i in range(min(10, len(self.data))):
-            print(f"Example {i+1} ({len(self.data[i])} tokens): {self.data[i][:10]}...")
+        #print("\nFirst 10 tokenized examples:")
+        #for i in range(min(10, len(self.data))):
+        #    print(f"Example {i+1} ({len(self.data[i])} tokens): {self.data[i][:10]}...")
             
     def __len__(self):
         """
@@ -138,30 +137,24 @@ class SentenceDataset(Dataset):
                 * label (int): the class label
                 * length (int): the length (tokens) of the sentence
         """
-        # Get the tokens and label for this index
-        tokens = self.data[index]
+        example = self.data[index]
+        # map tokens to ids according to word2idx
+        example = [self.word2idx.get(token, self.word2idx['<unk>']) for token in example]
         label = self.labels[index]
+        length = len(example) 
+
+        # zero padding using the maximum length from initialization
+        # or truncation in case a larger example is found
+        if length < self.max_length:
+            example += [0] * (self.max_length - length)
+        else:
+            example = example[:self.max_length]
+            
+        #if index < 5:
+        #    tokens = self.data[index]
+        #    print(f"\nOriginal tokens: {tokens}")
+        #    print(f"Encoded example: {example}")
+        #    print(f"Label: {label}")
+        #    print(f"Length: {min(length, self.max_length)}")
         
-        # Get the actual length of the sentence (without padding)
-        length = len(tokens)
-        
-        # Get the <unk> token ID once
-        unk_id = self.word2idx.get("<unk>")
-        
-        # Pre-allocate the example array with zeros (avoiding extend operations)
-        example = torch.zeros(self.max_length, dtype=torch.long)
-        
-        # Fill in the token IDs for the actual tokens (up to max_length)
-        for i in range(min(length, self.max_length)):
-            # Use get with default for efficiency - single lookup
-            token_id = self.word2idx.get(tokens[i], unk_id)
-            example[i] = token_id
-        
-        # Print examples only for the first 5 indices (avoid overhead in production)
-        if index < 5:
-            print(f"\nOriginal tokens: {tokens}")
-            print(f"Encoded example: {example}")
-            print(f"Label: {label}")
-            print(f"Length: {min(length, self.max_length)}")
-        
-        return example, label, min(length, self.max_length)
+        return np.array(example), label, length
