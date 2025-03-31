@@ -1,6 +1,14 @@
 from torch.utils.data import Dataset
 from tqdm import tqdm
-
+import torch
+import numpy as np
+import nltk
+from nltk.tokenize import word_tokenize
+from multiprocessing import Pool, cpu_count
+# Try to use ekphrasis for Twitter data
+from ekphrasis.classes.preprocessor import TextPreProcessor
+from ekphrasis.classes.tokenizer import SocialTokenizer
+from ekphrasis.dicts.emoticons import emoticons
 
 class SentenceDataset(Dataset):
     """
@@ -19,25 +27,93 @@ class SentenceDataset(Dataset):
         In the initialization of the dataset we will have to assign the
         input values to the corresponding class attributes
         and preprocess the text samples
-
-        -Store all meaningful arguments to the constructor here for debugging
-         and for usage in other methods
-        -Do most of the heavy-lifting like preprocessing the dataset here
-
-
+        
         Args:
             X (list): List of training samples
             y (list): List of training labels
             word2idx (dict): a dictionary which maps words to indexes
         """
-
-        # self.data = X
-        # self.labels = y
-        # self.word2idx = word2idx
-
-        # EX2
-        raise NotImplementedError
-
+        # Efficiently check for required resources
+        try:
+            nltk.data.find('tokenizers/punkt')
+        except LookupError:
+            nltk.download('punkt', quiet=True)
+        
+        # Store the inputs
+        self.labels = y
+        self.word2idx = word2idx
+        
+        # Check if we're dealing with Twitter data with minimal scanning
+        # Sample just a subset of data for faster detection
+        sample_size = min(100, len(X))
+        is_twitter_data = any('@' in text or '#' in text or 'http' in text for text in X[:sample_size])
+        
+        # Pre-allocate data list with appropriate size for better memory management
+        self.data = [None] * len(X)
+        
+        if is_twitter_data:
+            try:   
+                # Initialize the processor once outside the loop
+                text_processor = TextPreProcessor(
+                    normalize=['url', 'email', 'percent', 'money', 'phone', 'user',
+                            'time', 'date', 'number'],
+                    annotate={"hashtag", "allcaps", "elongated", "repeated",
+                            'emphasis', 'censored'},
+                    fix_html=True,
+                    segmenter="twitter", 
+                    corrector="twitter",
+                    unpack_hashtags=True,
+                    unpack_contractions=True,
+                    spell_correct_elong=False,
+                    tokenizer=SocialTokenizer(lowercase=True).tokenize,
+                    dicts=[emoticons]
+                )
+                
+                # Use tqdm for progress tracking
+                for i, text in enumerate(tqdm(X, desc="Tokenizing tweets")):
+                    self.data[i] = text_processor.pre_process_doc(text)
+                    
+            except ImportError:
+                raise ImportError("Ekphrasis is not installed. Please install it to process Twitter data.")
+        else:
+            # For standard tokenization, use batch processing where possible
+            # Define a worker function
+            def tokenize_text(text):
+                tokens = word_tokenize(text.lower())
+                return [token for token in tokens if token.strip()]
+            
+            # Use multiprocessing for faster tokenization on large datasets
+            if len(X) > 10000:
+                with Pool(processes=cpu_count()) as pool:
+                    self.data = list(tqdm(pool.imap(tokenize_text, X), 
+                                        total=len(X), 
+                                        desc="Tokenizing text"))
+            else:
+                # Direct processing for smaller datasets to avoid overhead
+                for i, text in enumerate(tqdm(X, desc="Tokenizing text")):
+                    self.data[i] = tokenize_text(text)
+        
+        # Calculate max length efficiently
+        lengths = [len(tokens) for tokens in self.data]
+        self.max_length = max(lengths)
+        
+        # Print length distribution for better decision-making
+        percentiles = np.percentile(lengths, [50, 75, 90, 95, 99])
+        print(f"Sentence length stats: mean={np.mean(lengths):.1f}, median={percentiles[0]:.1f}")
+        print(f"75th={percentiles[1]:.1f}, 90th={percentiles[2]:.1f}, 95th={percentiles[3]:.1f}, 99th={percentiles[4]:.1f}, max={self.max_length}")
+        
+        # Suggest a reasonable max_length that covers most cases
+        suggested_max = int(percentiles[2])  # 90th percentile is often a good choice
+        print(f"Suggested max_length: {suggested_max} (covers 90% of samples)")
+        
+        # Optional: Allow setting a custom max_length to avoid outliers
+        # self.max_length = suggested_max  # Uncomment to use suggested length
+        
+        # Print the first 10 tokenized examples efficiently
+        print("\nFirst 10 tokenized examples:")
+        for i in range(min(10, len(self.data))):
+            print(f"Example {i+1} ({len(self.data[i])} tokens): {self.data[i][:10]}...")
+            
     def __len__(self):
         """
         Must return the length of the dataset, so the dataloader can know
@@ -54,29 +130,38 @@ class SentenceDataset(Dataset):
         Returns the _transformed_ item from the dataset
 
         Args:
-            index (int):
+            index (int): Index of the item to retrieve
 
         Returns:
             (tuple):
                 * example (ndarray): vector representation of a training example
                 * label (int): the class label
                 * length (int): the length (tokens) of the sentence
-
-        Examples:
-            For an `index` where:
-            ::
-                self.data[index] = ['this', 'is', 'really', 'simple']
-                self.target[index] = "neutral"
-
-            the function will have to return something like:
-            ::
-                example = [  533  3908  1387   649   0     0     0     0]
-                label = 1
-                length = 4
         """
-
-        # EX3
-
-        # return example, label, length
-        raise NotImplementedError
-
+        # Get the tokens and label for this index
+        tokens = self.data[index]
+        label = self.labels[index]
+        
+        # Get the actual length of the sentence (without padding)
+        length = len(tokens)
+        
+        # Get the <unk> token ID once
+        unk_id = self.word2idx.get("<unk>")
+        
+        # Pre-allocate the example array with zeros (avoiding extend operations)
+        example = torch.zeros(self.max_length, dtype=torch.long)
+        
+        # Fill in the token IDs for the actual tokens (up to max_length)
+        for i in range(min(length, self.max_length)):
+            # Use get with default for efficiency - single lookup
+            token_id = self.word2idx.get(tokens[i], unk_id)
+            example[i] = token_id
+        
+        # Print examples only for the first 5 indices (avoid overhead in production)
+        if index < 5:
+            print(f"\nOriginal tokens: {tokens}")
+            print(f"Encoded example: {example}")
+            print(f"Label: {label}")
+            print(f"Length: {min(length, self.max_length)}")
+        
+        return example, label, min(length, self.max_length)

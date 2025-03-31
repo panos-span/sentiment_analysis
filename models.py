@@ -25,56 +25,90 @@ class BaselineDNN(nn.Module):
         super(BaselineDNN, self).__init__()
 
         # 1 - define the embedding layer
-        ...  # EX4
+        embeddings = np.array(embeddings)
+        num_embeddings, embedding_dim = embeddings.shape
+        self.embedding_layer = nn.Embedding(
+            num_embeddings=num_embeddings,
+            embedding_dim=embedding_dim,
+            padding_idx=0,  # Use 0 for padding tokens
+        ) # EX4
 
         # 2 - initialize the weights of our Embedding layer
         # from the pretrained word embeddings
-        ...  # EX4
+        self.embedding_layer.weight.data.copy_(torch.from_numpy(embeddings))
 
         # 3 - define if the embedding layer will be frozen or finetuned
-        ...  # EX4
+        # (trainable) during training
+        self.embedding_layer.weight.requires_grad = trainable_emb # EX4
 
         # 4 - define a non-linear transformation of the representations
-        ...  # EX5
+        embedding_dim = embeddings.shape[1]
+        hidden_dim = 128  # We can choose any dimension here
+        self.hidden_layer = nn.Sequential(
+            nn.Linear(embedding_dim, hidden_dim),
+            nn.ReLU()
+        )
+
+        # EX5
 
         # 5 - define the final Linear layer which maps
         # the representations to the classes
-        ...  # EX5
+        self.output_layer = nn.Linear(hidden_dim, output_size) # EX5
 
     def forward(self, x, lengths):
         """
         This is the heart of the model.
-        This function, defines how the data passes through the network.
+        This function defines how the data passes through the network.
 
-        Returns: the logits for each class
+        Args:
+            x (torch.Tensor): Input tensor of token IDs with shape (batch_size, max_length)
+            lengths (torch.Tensor): Actual lengths of each sequence in the batch
 
+        Returns: 
+            torch.Tensor: The logits for each class
         """
 
-        # 1 - embed the words, using the embedding layer
-        embeddings = ...  # EX6
-
-        # 2 - construct a sentence representation out of the word embeddings
-        representations = ...  # EX6
-
-        # 3 - transform the representations to new ones.
-        representations = ...  # EX6
-
-        # 4 - project the representations to classes using a linear layer
-        logits = ...  # EX6
-
+        # 1 - embed the words using the embedding layer
+        # Shape: (batch_size, max_length, emb_dim)
+        embeddings = self.embedding_layer(x)
+        
+        # 2 - construct a sentence representation by averaging word embeddings
+        # Create a mask to identify non-padding tokens (more efficient than looping)
+        mask = torch.arange(x.size(1), device=x.device)[None, :] < lengths[:, None]
+        
+        # Convert mask to same dtype as embeddings for multiplication
+        mask = mask.unsqueeze(2).to(embeddings.dtype)
+        
+        # Sum the embeddings using the mask to exclude padding tokens
+        # Shape: (batch_size, emb_dim)
+        sum_embeddings = (embeddings * mask).sum(dim=1)
+        
+        # Divide by the actual lengths to get the mean
+        # Add small epsilon to avoid division by zero (though it shouldn't happen)
+        representations = sum_embeddings / (lengths.float().unsqueeze(1) + 1e-8)
+        
+        # 3 - apply non-linear transformation to get new representations
+        representations = self.hidden_layer(representations)
+        
+        # 4 - project the representations to class logits
+        logits = self.output_layer(representations)
+        
         return logits
 
 
 class LSTM(nn.Module):
-    def __init__(self, output_size, embeddings, trainable_emb=False, bidirectional=False):
+    def __init__(
+        self, output_size, embeddings, trainable_emb=False, bidirectional=False
+    ):
 
         super(LSTM, self).__init__()
         self.hidden_size = 100
         self.num_layers = 1
         self.bidirectional = bidirectional
 
-        self.representation_size = 2 * \
-            self.hidden_size if self.bidirectional else self.hidden_size
+        self.representation_size = (
+            2 * self.hidden_size if self.bidirectional else self.hidden_size
+        )
 
         embeddings = np.array(embeddings)
         num_embeddings, dim = embeddings.shape
@@ -82,12 +116,17 @@ class LSTM(nn.Module):
         self.embeddings = nn.Embedding(num_embeddings, dim)
         self.output_size = output_size
 
-        self.lstm = nn.LSTM(dim, hidden_size=self.hidden_size,
-                            num_layers=self.num_layers, bidirectional=self.bidirectional)
+        self.lstm = nn.LSTM(
+            dim,
+            hidden_size=self.hidden_size,
+            num_layers=self.num_layers,
+            bidirectional=self.bidirectional,
+        )
 
         if not trainable_emb:
             self.embeddings = self.embeddings.from_pretrained(
-                torch.Tensor(embeddings), freeze=True)
+                torch.Tensor(embeddings), freeze=True
+            )
 
         self.linear = nn.Linear(self.representation_size, output_size)
 
@@ -95,7 +134,8 @@ class LSTM(nn.Module):
         batch_size, max_length = x.shape
         embeddings = self.embeddings(x)
         X = torch.nn.utils.rnn.pack_padded_sequence(
-            embeddings, lengths, batch_first=True, enforce_sorted=False)
+            embeddings, lengths, batch_first=True, enforce_sorted=False
+        )
 
         ht, _ = self.lstm(X)
 
