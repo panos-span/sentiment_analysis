@@ -12,7 +12,7 @@ class BaselineDNN(nn.Module):
        to the number of classes.ngth)
     """
 
-    def __init__(self, output_size, embeddings, trainable_emb=False, hidden_dim=3200):
+    def __init__(self, output_size, embeddings, trainable_emb=False, hidden_dim=1000):
         """
 
         Args:
@@ -44,7 +44,7 @@ class BaselineDNN(nn.Module):
         # 4 - define a non-linear transformation of the representations
         embedding_dim = embeddings.shape[1]
         self.hidden_layer = nn.Sequential(
-            nn.Linear(embedding_dim, hidden_dim),
+            nn.Linear(2 * embedding_dim, hidden_dim),
             nn.ReLU()
         )
 
@@ -107,12 +107,12 @@ class BaselineDNN(nn.Module):
 
 class LSTM(nn.Module):
     def __init__(
-        self, output_size, embeddings, trainable_emb=False, bidirectional=False, dropout=0.2
+        self, output_size, embeddings, trainable_emb=False, bidirectional=False, dropout=0.0
     ):
 
         super(LSTM, self).__init__()
         self.hidden_size = 100
-        self.num_layers = 1
+        self.num_layers = 3
         self.bidirectional = bidirectional
 
         self.representation_size = (
@@ -158,7 +158,7 @@ class LSTM(nn.Module):
         """
         # Embed the words using the embedding layer
         # Shape: (batch_size, max_length, emb_dim)
-        embeddings = self.embedding_layer(x)
+        embeddings = self.embeddings(x)
         
         # Pack the padded sequence for the LSTM
         # This step is crucial for handling variable-length sequences efficiently
@@ -176,7 +176,7 @@ class LSTM(nn.Module):
         # Reshape h_n to (num_layers, num_directions, batch, hidden_size)
         num_layers = self.lstm.num_layers
         num_directions = 2 if self.bidirectional else 1
-        h_n = hidden.view(num_layers, num_directions, x.size(0), self.rnn_size)
+        h_n = hidden.view(num_layers, num_directions, x.size(0), self.hidden_size)
 
         # Get the last layer's hidden state
         last_layer_h_n = h_n[-1]  # Shape: (num_directions, batch, hidden_size)

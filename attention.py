@@ -67,6 +67,8 @@ class SimpleSelfAttentionModel(nn.Module):
         self.ffwd = FeedFoward(dim)
         self.ln1 = nn.LayerNorm(dim)
         self.ln2 = nn.LayerNorm(dim)
+        
+        self.dropout = nn.Dropout(dropout)
 
         # TODO: Main-lab-Q3 - define output classification layer
         self.output = nn.Sequential(
@@ -101,6 +103,7 @@ class MultiHeadAttention(nn.Module):
 
     def __init__(self, num_heads, head_size, n_embd, dropout=0.0):
         super().__init__()
+        assert n_embd % num_heads == 0, f"Embedding dimension {n_embd} not divisible by {num_heads} heads"
         self.heads = nn.ModuleList([Head(head_size, n_embd)
                                     for _ in range(num_heads)])
         self.proj = nn.Linear(n_embd, n_embd)
@@ -114,7 +117,7 @@ class MultiHeadAttention(nn.Module):
 
 class MultiHeadAttentionModel(nn.Module):
 
-    def __init__(self, output_size, embeddings, max_length=60, n_head=3 , dropout=0.2):
+    def __init__(self, output_size, embeddings, max_length=60, n_head=3, dropout=0.2):
         super().__init__()
         
         self.max_length = max_length
@@ -133,10 +136,18 @@ class MultiHeadAttentionModel(nn.Module):
         self.position_embedding_table = nn.Embedding(self.max_length, dim)
 
         # MultiHead attention
+        if dim % n_head != 0:
+            # If not divisible, adjust the number of heads to ensure divisibility
+            effective_n_head = n_head
+            while dim % effective_n_head != 0:
+                effective_n_head -= 1
+            print(f"Warning: Embedding dim {dim} not divisible by {n_head} heads, using {effective_n_head} heads instead")
+            self.n_head = effective_n_head
+
         head_size = dim // self.n_head
-        self.mba = MultiHeadAttention(n_head, head_size, dim)
+        self.mha = MultiHeadAttention(self.n_head, head_size, dim, dropout)
         
-                # Feed-forward network
+        # Feed-forward network
         self.ffwd = FeedFoward(dim)
         
         # Layer normalization
@@ -144,7 +155,6 @@ class MultiHeadAttentionModel(nn.Module):
         self.ln2 = nn.LayerNorm(dim)
         
         # Output classification layer
-        self.dropout = nn.Dropout(dropout)
         self.output = nn.Linear(dim, output_size)
 
     def forward(self, x):
@@ -171,9 +181,6 @@ class MultiHeadAttentionModel(nn.Module):
         # Apply mask and compute average
         x = (x * mask).sum(dim=1) / lengths.unsqueeze(1).clamp(min=1)  # (B,C)
         
-        # Apply dropout before classification
-        x = self.dropout(x)
-        
         # Project to output classes
         logits = self.output(x)
         
@@ -199,7 +206,7 @@ class Block(nn.Module):
 
 
 class TransformerEncoderModel(nn.Module):
-    def __init__(self, output_size, embeddings, max_length=60, n_head=3, n_layer=3, dropout=0.2):
+    def __init__(self, output_size, embeddings, max_length=60, n_head=3, n_layer=3,):
         super().__init__()
         
         self.max_length = max_length
@@ -219,11 +226,19 @@ class TransformerEncoderModel(nn.Module):
         self.position_embedding_table = nn.Embedding(self.max_length, dim)
         
         head_size = dim // self.n_head
+        if dim % self.n_head != 0:
+            # If not divisible, adjust the number of heads to ensure divisibility
+            effective_n_head = n_head
+            while dim % effective_n_head != 0:
+                effective_n_head -= 1
+            print(f"Warning: Embedding dim {dim} not divisible by {n_head} heads, using {effective_n_head} heads instead")
+            self.n_head = effective_n_head
+            
+        print(f"Using {self.n_head} heads of size {head_size} for embedding dim {dim}")
         self.blocks = nn.Sequential(
-            *[Block(n_head, head_size, dim) for _ in range(n_layer)])
+            *[Block(self.n_head, head_size, dim) for _ in range(n_layer)])
         self.ln_f = nn.LayerNorm(dim)  # final layer norm
 
-        self.dropout = nn.Dropout(dropout)
         self.output = nn.Linear(dim, output_size)
 
     def forward(self, x):
@@ -249,9 +264,6 @@ class TransformerEncoderModel(nn.Module):
         
         # Apply mask and compute average
         x = (x * mask).sum(dim=1) / lengths.unsqueeze(1).clamp(min=1)  # (B,C)
-        
-        # Apply dropout before classification
-        x = self.dropout(x)
         
         # Project to output classes
         logits = self.output(x)
