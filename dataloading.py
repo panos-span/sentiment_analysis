@@ -97,21 +97,21 @@ class SentenceDataset(Dataset):
         self.max_length = max(lengths)
         
         # Print length distribution for better decision-making
-        #percentiles = np.percentile(lengths, [50, 75, 90, 95, 99])
-        #print(f"Sentence length stats: mean={np.mean(lengths):.1f}, median={percentiles[0]:.1f}")
-        #print(f"75th={percentiles[1]:.1f}, 90th={percentiles[2]:.1f}, 95th={percentiles[3]:.1f}, 99th={percentiles[4]:.1f}, max={self.max_length}")
+        percentiles = np.percentile(lengths, [50, 75, 90, 95, 99])
+        print(f"Sentence length stats: mean={np.mean(lengths):.1f}, median={percentiles[0]:.1f}")
+        print(f"75th={percentiles[1]:.1f}, 90th={percentiles[2]:.1f}, 95th={percentiles[3]:.1f}, 99th={percentiles[4]:.1f}, max={self.max_length}")
         
         # Suggest a reasonable max_length that covers most cases
-        #suggested_max = int(percentiles[2])  # 90th percentile is often a good choice
-        #print(f"Suggested max_length: {suggested_max} (covers 90% of samples)")
+        suggested_max = int(percentiles[2])  # 90th percentile is often a good choice
+        print(f"Suggested max_length: {suggested_max} (covers 90% of samples)")
         
         # Optional: Allow setting a custom max_length to avoid outliers
-        # self.max_length = suggested_max  # Uncomment to use suggested length
+        self.max_length = suggested_max  # Uncomment to use suggested length
         
         # Print the first 10 tokenized examples efficiently
-        #print("\nFirst 10 tokenized examples:")
-        #for i in range(min(10, len(self.data))):
-        #    print(f"Example {i+1} ({len(self.data[i])} tokens): {self.data[i][:10]}...")
+        print("\nFirst 10 tokenized examples:")
+        for i in range(min(10, len(self.data))):
+            print(f"Example {i+1} ({len(self.data[i])} tokens): {self.data[i][:10]}...")
             
     def __len__(self):
         """

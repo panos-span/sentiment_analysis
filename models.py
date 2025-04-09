@@ -12,7 +12,7 @@ class BaselineDNN(nn.Module):
        to the number of classes.ngth)
     """
 
-    def __init__(self, output_size, embeddings, trainable_emb=False, hidden_dim=3200):
+    def __init__(self, output_size, embeddings, trainable_emb=False, hidden_dim=1000):
         """
 
         Args:
@@ -42,7 +42,6 @@ class BaselineDNN(nn.Module):
         self.embedding_layer.weight.requires_grad = trainable_emb # EX4
 
         # 4 - define a non-linear transformation of the representations
-        embedding_dim = embeddings.shape[1]
         self.hidden_layer = nn.Sequential(
             nn.Linear(embedding_dim, hidden_dim),
             nn.ReLU()
@@ -66,53 +65,39 @@ class BaselineDNN(nn.Module):
         Returns: 
             torch.Tensor: The logits for each class
         """
-
+        
         # 1 - embed the words using the embedding layer
         # Shape: (batch_size, max_length, emb_dim)
         embeddings = self.embedding_layer(x)
-        
-        # 2 - construct a sentence representation by combining mean and max pooling
-        # Create a mask to identify non-padding tokens
+
+        # 2 - construct a sentence representation by averaging word embeddings
+        # Create a mask to identify non-padding tokens (more efficient than looping)
         mask = torch.arange(x.size(1), device=x.device)[None, :] < lengths[:, None]
         
         # Convert mask to same dtype as embeddings for multiplication
         mask = mask.unsqueeze(2).to(embeddings.dtype)
-        
+
         # Sum the embeddings using the mask to exclude padding tokens
         # Shape: (batch_size, emb_dim)
         sum_embeddings = (embeddings * mask).sum(dim=1)
-        
-        # Divide by the actual lengths to get the mean
-        mean_embeddings = sum_embeddings / (lengths.float().unsqueeze(1) + 1e-8)
-        
-        # Max pooling - apply mask by setting padded positions to a very negative value
-        padded_embeddings = embeddings.clone()
-        # Invert the mask to get padded positions and multiply by a large negative number
-        padded_embeddings = padded_embeddings.masked_fill_(~mask.bool(), float('-inf'))
-        # Get the maximum value for each feature across the sequence dimension
-        max_embeddings = torch.max(padded_embeddings, dim=1)[0]
-        
-        # Concatenate mean and max pooling results along the feature dimension
-        # Shape: (batch_size, 2*emb_dim)
-        representations = torch.cat([mean_embeddings, max_embeddings], dim=1)
-        
+        # Add small epsilon to avoid division by zero (though it shouldn't happen)
+        representations = sum_embeddings / (lengths.float().unsqueeze(1) + 1e-8)
         # 3 - apply non-linear transformation to get new representations
         representations = self.hidden_layer(representations)
-        
+
         # 4 - project the representations to class logits
         logits = self.output_layer(representations)
         
         return logits
 
-
 class LSTM(nn.Module):
     def __init__(
-        self, output_size, embeddings, trainable_emb=False, bidirectional=False, dropout=0.2
+        self, output_size, embeddings, trainable_emb=False, bidirectional=False, dropout=0.0
     ):
 
         super(LSTM, self).__init__()
-        self.hidden_size = 100
-        self.num_layers = 1
+        self.hidden_size = 256
+        self.num_layers = 3
         self.bidirectional = bidirectional
 
         self.representation_size = (
@@ -147,48 +132,53 @@ class LSTM(nn.Module):
 
     def forward(self, x, lengths):
         """
-        Forward pass for the LSTM model.
+        Forward pass for the LSTM model (supports bidirectional and truncation).
         
         Args:
-            x (torch.Tensor): Input tensor of token IDs with shape (batch_size, max_length)
-            lengths (torch.Tensor): Actual lengths of each sequence in the batch
+            x (torch.Tensor): Input tensor of shape (batch_size, max_length)
+            lengths (torch.Tensor): Actual lengths of sequences in the batch (1D tensor)
             
         Returns:
-            torch.Tensor: The logits for each class
+            torch.Tensor: Logits for each class (shape: batch_size, num_classes)
         """
-        # Embed the words using the embedding layer
-        # Shape: (batch_size, max_length, emb_dim)
-        embeddings = self.embedding_layer(x)
+        batch_size, max_length = x.size(0), x.size(1)
         
-        # Pack the padded sequence for the LSTM
-        # This step is crucial for handling variable-length sequences efficiently
+        # 1. Clamp lengths to ensure they don't exceed max_length
+        clamped_lengths = torch.clamp(lengths, max=max_length)
+        
+        # 2. Embed the input tokens
+        embeddings = self.embeddings(x)  # (batch_size, max_length, emb_dim)
+        
+        # 3. Pack sequences for efficient LSTM processing
         packed_embeddings = nn.utils.rnn.pack_padded_sequence(
-            embeddings, 
-            lengths.cpu(), 
+            embeddings,
+            clamped_lengths.cpu(),  # Must be on CPU for pack_padded_sequence
             batch_first=True,
             enforce_sorted=False
         )
         
-        # LSTM forward pass with packed input
+        # 4. LSTM forward pass (returns packed_output and hidden states)
         _, (hidden, _) = self.lstm(packed_embeddings)
-
-        # h_n shape: (num_layers * num_directions, batch, hidden_size)
-        # Reshape h_n to (num_layers, num_directions, batch, hidden_size)
+        
+        # ===== OPTION 1: Use last hidden states (original approach) =====
+        # Reshape hidden states (num_layers * num_directions, batch, hidden_size)
         num_layers = self.lstm.num_layers
         num_directions = 2 if self.bidirectional else 1
-        h_n = hidden.view(num_layers, num_directions, x.size(0), self.rnn_size)
-
+        h_n = hidden.view(num_layers, num_directions, batch_size, self.hidden_size)
+        
         # Get the last layer's hidden state
-        last_layer_h_n = h_n[-1]  # Shape: (num_directions, batch, hidden_size)
-
+        last_layer_h_n = h_n[-1]  # (num_directions, batch, hidden_size)
+        
         if self.bidirectional:
-            # Concatenate the hidden states from both directions
+            # Concatenate forward and backward hidden states
             last_outputs = torch.cat((last_layer_h_n[0], last_layer_h_n[1]), dim=1)
         else:
-            last_outputs = last_layer_h_n[0]
-
-        # Apply dropout
-        last_outputs = self.dropout(last_outputs)
-
-        # Pass through fully connected layer
-        return self.fc(last_outputs)
+            last_outputs = last_layer_h_n[0]  # (batch, hidden_size)
+        
+        representations = last_outputs  # or last_outputs_trunc
+        
+        # 5. Apply dropout and fully connected layer
+        representations = self.dropout(representations)
+        logits = self.fc(representations)
+        
+        return logits

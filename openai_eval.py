@@ -3,6 +3,8 @@ from sklearn.metrics import accuracy_score, f1_score, recall_score, confusion_ma
 import openai
 import time
 import json
+from openai import OpenAI
+import os
 from utils.load_datasets import load_MR, load_Semeval2017A
 
 class ChatGPTSentimentAnalyzer:
@@ -16,6 +18,7 @@ class ChatGPTSentimentAnalyzer:
         """
         openai.api_key = api_key
         self.model = model
+        self.client = OpenAI(api_key=api_key)
         
         # Define different prompt templates to experiment with
         self.prompts = {
@@ -79,7 +82,7 @@ Please classify this tweet's sentiment as EXACTLY one of:
         prompt = prompt.format(text=text)
         
         try:
-            response = openai.ChatCompletion.create(
+            response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": "You are a helpful assistant that analyzes sentiment."},
@@ -379,4 +382,5 @@ def analyze_errors(results):
     }
 
 # Note: To run the experiments, you would need to call:
-# run_experiments("your-openai-api-key")
+API_KEY = os.environ.get("API_KEY")
+run_experiments(API_KEY)

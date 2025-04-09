@@ -127,7 +127,7 @@ def eval_dataset(dataloader, model, loss_function):
 
             # Step 4 - make predictions (class = argmax of posteriors)
             if outputs.shape[1] == 1:  # Binary classification (equivalent to 0.5 threshold)
-                predictions = (outputs > 0).long().squeeze()
+                predictions = (outputs > 0.5).long().squeeze()
             else:  # Multi-class classification
                 _, predictions = torch.max(outputs, 1) # EX9
 
